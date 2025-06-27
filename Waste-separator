@@ -1,0 +1,138 @@
+#include <CheapStepper.h>
+#include <Servo.h>
+
+// Servo motor for controlling the gate
+Servo servo1;  
+
+// Pin Definitions
+#define ir 5            // IR sensor pin for detecting waste
+#define proxi 6         // Proximity sensor pin for waste detection
+#define buzzer 12       // Buzzer pin for alerting when bins are full
+int potPin = A0;        // Soil moisture input pin for wet waste detection
+int soil = 0;           // Variable to store soil moisture value
+int fsoil;              // Processed soil moisture value
+
+// Ultrasonic sensor pins for dry bin fullness check
+const int trigPin = 2;
+const int echoPin = 3;
+const int distanceThreshold = 3; // Distance threshold for fullness check (in cm)
+const unsigned long timeThreshold = 10000; // Time threshold for buzzer activation (10 seconds)
+unsigned long startTime = 0;
+bool trackingStart = false;   // To track if fullness check has started
+bool buzzerActivated = false; // To track if the buzzer has been activated
+
+// Stepper motor setup for controlling waste bin positioning
+CheapStepper stepper(8, 9, 10, 11);  // Stepper motor pins for rotating bins
+
+void setup() {
+  Serial.begin(9600);  // Initialize serial communication for debugging
+
+  // Set sensor pins as input or output
+  pinMode(proxi, INPUT_PULLUP);  
+  pinMode(ir, INPUT);          // IR sensor
+  pinMode(buzzer, OUTPUT);     // Buzzer
+  pinMode(trigPin, OUTPUT);   // Ultrasonic trigger pin
+  pinMode(echoPin, INPUT);    // Ultrasonic echo pin
+
+  // Attach servo motor and set RPM for stepper motor
+  servo1.attach(7);
+  stepper.setRpm(17); 
+  
+  // Initial servo setup (opens and closes the gate)
+  servo1.write(180);  
+  delay(1000);  
+  servo1.write(70);   
+  delay(1000);  
+}
+
+void loop() {
+  //ULTRASONIC SENSOR CODE
+  long duration;
+  float distance;
+
+  // Trigger ultrasonic pulse to measure distance in dry waste bin
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH);
+  distance = duration * 0.034 / 2;  // Calculate distance from the echo time
+
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.println(" cm");
+
+  // If distance is less than threshold, start tracking the bin fullness
+  if (distance < distanceThreshold) {
+    if (!trackingStart) {
+      startTime = millis();  // Start the time tracking when the bin becomes full
+      trackingStart = true;
+    } else {
+      if ((millis() - startTime >= timeThreshold) && !buzzerActivated) {
+        digitalWrite(buzzer, HIGH);  // Activate buzzer for full bin alert
+        buzzerActivated = true;
+      }
+    }
+  } else {
+    trackingStart = false;     // Reset tracking when bin is not full
+    buzzerActivated = false;
+    digitalWrite(buzzer, LOW); // Ensure buzzer is off
+  }
+
+  // PROXIMITY SENSOR CODE
+  fsoil = 0;
+  int L = digitalRead(proxi);  // Read proximity sensor value for waste detection
+  Serial.print("Proxi: ");
+  Serial.println(L);
+
+  // If proximity sensor detects waste, perform sorting action
+  if (L == 0) {  
+    stepper.moveDegreesCW(240);  // Rotate stepper motor to position appropriate bin
+    delay(1000); 
+    servo1.write(180);  // Open gate to release waste
+    delay(1000);
+    servo1.write(70);   // Close gate
+    delay(1000);
+    stepper.moveDegreesCCW(240); // Reset stepper motor position
+    delay(1000); 
+  }
+
+  // IR + SOIL SENSOR CODE
+  if (digitalRead(ir) == 0) {  // If IR sensor detects wet waste
+    soil = 0;
+    // Read moisture level to detect wet waste
+    for (int i = 0; i < 3; i++) {
+      soil = analogRead(potPin);
+      soil = constrain(soil, 485, 1023);  // Constrain the moisture value
+      fsoil = map(soil, 485, 1023, 100, 0) + fsoil;
+      delay(75);
+    }
+
+    fsoil = fsoil / 3;  // Average the moisture readings
+    Serial.print("Soil Moisture: ");
+    Serial.print(fsoil);
+    Serial.println("%");
+
+    // If moisture level is high, sort into wet waste bin
+    if (fsoil > 20) {  
+      stepper.moveDegreesCW(120);  // Rotate to the wet waste bin
+      delay(1000); 
+      servo1.write(180);  // Open gate to release waste into wet bin
+      delay(1000);
+      servo1.write(70);   // Close gate
+      delay(1000);
+      stepper.moveDegreesCCW(120);  // Reset stepper motor position
+      delay(1000); 
+    } else {  // If moisture is low, sort into dry waste bin
+      Serial.println("Soil is wet. No need for action.");
+      servo1.write(180);  // Open gate for dry waste bin
+      delay(1000);
+      servo1.write(70);   // Close gate
+      delay(1000);
+    }
+  }
+
+  delay(1);  // Small delay to stabilize the system
+}
